@@ -11,16 +11,33 @@ import (
 	"log/slog"
 	"os"
 	"sort"
+	"strings"
 	"text/tabwriter"
 
 	"pkgfields/internal/field"
 	"pkgfields/internal/fleetpkg"
 )
 
+type stringSliceFlag []string
+
+func (f *stringSliceFlag) String() string {
+	return strings.Join(*f, ", ")
+}
+
+func (f *stringSliceFlag) Set(value string) error {
+	vals := strings.Split(value, ",")
+	for _, v := range vals {
+		*f = append(*f, strings.TrimSpace(v))
+	}
+
+	return nil
+}
+
 var (
-	pkgDir     string
-	debug      bool
-	outputJSON bool
+	filterDataStreams stringSliceFlag
+	pkgDir            string
+	debug             bool
+	outputJSON        bool
 )
 
 func usage() {
@@ -39,6 +56,7 @@ func parseArgs() {
 	flag.Usage = usage
 	flag.BoolVar(&debug, "debug", false, "enable debug logging")
 	flag.BoolVar(&outputJSON, "json", false, "output as JSON")
+	flag.Var(&filterDataStreams, "data-streams", "filter on a comma-separated list of data streams")
 
 	flag.Parse()
 
@@ -48,7 +66,7 @@ func parseArgs() {
 }
 
 func doExtract() error {
-	pkg, err := fleetpkg.Load(pkgDir)
+	pkg, err := fleetpkg.Load(pkgDir, filterDataStreams...)
 	if err != nil {
 		return err
 	}

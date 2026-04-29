@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"pkgfields/internal/field"
+	"slices"
 	"sort"
 	"strings"
 
@@ -96,7 +97,7 @@ func loadDataStreamFields(ds *DataStream) error {
 	return nil
 }
 
-func Load(pkgDir string) (*Package, error) {
+func Load(pkgDir string, filteredDataStreams ...string) (*Package, error) {
 	var err error
 
 	pkg := Package{srcDir: pkgDir}
@@ -129,10 +130,19 @@ func Load(pkgDir string) (*Package, error) {
 	if pkg.Manifest.Type == TypeInput {
 		dataStreamManifests = []string{filepath.Join(pkgDir, "manifest.yml")}
 	} else {
-		var err error
 		pkg.DataStreams = map[string]*DataStream{}
-		if dataStreamManifests, err = filepath.Glob(filepath.Join(pkgDir, "data_stream/*/manifest.yml")); err != nil {
+		dirs, err := filepath.Glob(filepath.Join(pkgDir, "data_stream/*/manifest.yml"))
+		if err != nil {
 			return nil, err
+		}
+		dataStreamManifests = make([]string, 0, len(dirs))
+
+		for _, dir := range dirs {
+			dsName := filepath.Base(filepath.Dir(dir))
+			if len(filteredDataStreams) > 0 && !slices.Contains(filteredDataStreams, dsName) {
+				continue
+			}
+			dataStreamManifests = append(dataStreamManifests, dir)
 		}
 	}
 

@@ -10,9 +10,11 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"sort"
+	"text/tabwriter"
+
 	"pkgfields/internal/field"
 	"pkgfields/internal/fleetpkg"
-	"text/tabwriter"
 )
 
 var (
@@ -88,6 +90,7 @@ func doExtract() error {
 		} else {
 			res.DataStreams = make(map[string][]outputField, len(pkg.DataStreams))
 			for dsName, ds := range pkg.DataStreams {
+
 				for _, f := range ds.Fields {
 					var typeStr string
 					if f.Kind != field.KindECS {
@@ -124,10 +127,17 @@ func doExtract() error {
 		}
 		_ = tw.Flush()
 	} else {
-		for dsName, ds := range pkg.DataStreams {
+		dsNames := make([]string, 0, len(pkg.DataStreams))
+		for dsName := range pkg.DataStreams {
+			dsNames = append(dsNames, dsName)
+		}
+		sort.Strings(dsNames)
+
+		for _, dsName := range dsNames {
 			fmt.Println("Data Stream:", dsName)
+			fmt.Println()
 			_, _ = fmt.Fprintln(tw, "Name\tKind\tType\n----\t----\t----")
-			for _, f := range ds.Fields {
+			for _, f := range pkg.DataStreams[dsName].Fields {
 				var typeStr string
 				if f.Kind != field.KindECS {
 					typeStr = f.Type.String()
@@ -135,6 +145,7 @@ func doExtract() error {
 				_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\n", f.Name, f.Kind.String(), typeStr)
 			}
 			_ = tw.Flush()
+			fmt.Println()
 		}
 	}
 

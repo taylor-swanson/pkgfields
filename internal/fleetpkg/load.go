@@ -5,13 +5,12 @@
 package fleetpkg
 
 import (
-	"cmp"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"pkgfields/internal/field"
-	"slices"
+	"sort"
 	"strings"
 
 	"github.com/goccy/go-yaml"
@@ -87,12 +86,11 @@ func loadDataStreamFields(ds *DataStream) error {
 		}
 	}
 
-	slices.SortFunc(ds.Fields, func(a, b field.Field) int {
-		if n := cmp.Compare(a.Type, b.Type); n != 0 {
-			return n
-		}
-
-		return cmp.Compare(a.Name, b.Name)
+	sort.SliceStable(ds.Fields, func(i, j int) bool {
+		return ds.Fields[i].Name < ds.Fields[j].Name
+	})
+	sort.SliceStable(ds.Fields, func(i, j int) bool {
+		return ds.Fields[i].Kind > ds.Fields[j].Kind
 	})
 
 	return nil

@@ -2,7 +2,6 @@ module pkgfields
 
 go 1.26
 
-require (
-	github.com/Masterminds/semver/v3 v3.4.0 // indirect
-	github.com/goccy/go-yaml v1.19.2 // indirect
-)
+require github.com/andrewkroh/go-package-spec v0.0.0-20260316170906-7a5733761e68
+
+require gopkg.in/yaml.v3 v3.0.1 // indirect

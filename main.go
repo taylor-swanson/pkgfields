@@ -10,12 +10,13 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"text/tabwriter"
 
-	"pkgfields/internal/field"
-	"pkgfields/internal/fleetpkg"
+	"github.com/andrewkroh/go-package-spec/pkgreader"
+	"github.com/andrewkroh/go-package-spec/pkgspec"
 )
 
 type stringSliceFlag []string
@@ -65,105 +66,130 @@ func parseArgs() {
 	}
 }
 
+type fieldInfo struct {
+	Name string `json:"name"`
+	Kind string `json:"kind"`
+	Type string `json:"type,omitempty"`
+}
+
+func processFieldsFiles(files map[string]*pkgreader.FieldsFile) []fieldInfo {
+	var fields []fieldInfo
+
+	var flatten func(f pkgspec.Field, parent string)
+	flatten = func(f pkgspec.Field, parent string) {
+		name := f.Name
+		if parent != "" {
+			name = parent + "." + name
+		}
+
+		if f.Type != pkgspec.FieldTypeGroup {
+			fi := fieldInfo{
+				Name: name,
+			}
+			if f.External == pkgspec.FieldExternalECS {
+				fi.Kind = "ecs"
+			} else {
+				fi.Kind = "vendor"
+				fi.Type = string(f.Type)
+			}
+			fields = append(fields, fi)
+		}
+
+		for _, v := range f.Fields {
+			flatten(v, name)
+		}
+	}
+
+	for _, file := range files {
+		for _, f := range file.Fields {
+			flatten(f, "")
+		}
+	}
+
+	sort.SliceStable(fields, func(i, j int) bool {
+		return fields[i].Name < fields[j].Name
+	})
+	sort.SliceStable(fields, func(i, j int) bool {
+		return fields[i].Kind < fields[j].Kind
+	})
+
+	return fields
+}
+
 func doExtract() error {
-	pkg, err := fleetpkg.Load(pkgDir, filterDataStreams...)
+	type pkgResult struct {
+		Package      string                 `json:"package"`
+		Version      string                 `json:"version"`
+		ECSReference string                 `json:"ecs_reference"`
+		Input        []fieldInfo            `json:"input,omitempty"`
+		DataStreams  map[string][]fieldInfo `json:"data_streams,omitempty"`
+	}
+
+	pkg, err := pkgreader.Read(pkgDir)
 	if err != nil {
 		return err
 	}
 
-	if outputJSON {
-		type outputField struct {
-			Name string `json:"name"`
-			Kind string `json:"kind"`
-			Type string `json:"type,omitempty"`
-		}
-		type result struct {
-			Package      string                   `json:"package"`
-			Version      string                   `json:"version"`
-			ECSReference string                   `json:"ecs_reference"`
-			Input        []outputField            `json:"input,omitempty"`
-			DataStreams  map[string][]outputField `json:"data_streams,omitempty"`
-		}
-
-		res := result{
-			Package: pkg.Manifest.Name,
-			Version: pkg.Manifest.Version.String(),
-		}
-		if pkg.BuildManifest != nil {
-			res.ECSReference = pkg.BuildManifest.Dependencies.ECS.Reference
-		}
-		if pkg.Input != nil {
-			res.Input = make([]outputField, 0, len(pkg.Input.Fields))
-			for _, f := range pkg.Input.Fields {
-				var typeStr string
-				if f.Kind != field.KindECS {
-					typeStr = f.Type.String()
-				}
-				res.Input = append(res.Input, outputField{
-					Name: f.Name,
-					Kind: f.Kind.String(),
-					Type: typeStr,
-				})
-			}
-		} else {
-			res.DataStreams = make(map[string][]outputField, len(pkg.DataStreams))
-			for dsName, ds := range pkg.DataStreams {
-
-				for _, f := range ds.Fields {
-					var typeStr string
-					if f.Kind != field.KindECS {
-						typeStr = f.Type.String()
-					}
-					res.DataStreams[dsName] = append(res.DataStreams[dsName], outputField{
-						Name: f.Name,
-						Kind: f.Kind.String(),
-						Type: typeStr,
-					})
-				}
-			}
-		}
-
-		enc := json.NewEncoder(os.Stdout)
-		return enc.Encode(res)
+	result := pkgResult{
+		Package: pkg.Manifest().Name,
+		Version: pkg.Manifest().Version,
+	}
+	if pkg.Build != nil {
+		result.ECSReference = pkg.Build.Dependencies.ECS.Reference
 	}
 
-	fmt.Println("Package:", pkg.Manifest.Name)
-	if pkg.BuildManifest != nil {
-		fmt.Println("ECS Reference:", pkg.BuildManifest.Dependencies.ECS.Reference)
-	}
-	fmt.Println()
-	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	if pkg.Input != nil {
-		fmt.Println("Input Fields:")
-		_, _ = fmt.Fprintln(tw, "Name\tKind\tType\n----\t----\t----")
-		for _, f := range pkg.Input.Fields {
-			var typeStr string
-			if f.Kind != field.KindECS {
-				typeStr = f.Type.String()
-			}
-			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\n", f.Name, f.Kind.String(), typeStr)
-		}
-		_ = tw.Flush()
+	if pkg.Manifest().Type == pkgspec.ManifestTypeInput {
+		result.Input = processFieldsFiles(pkg.Fields)
 	} else {
-		dsNames := make([]string, 0, len(pkg.DataStreams))
-		for dsName := range pkg.DataStreams {
-			dsNames = append(dsNames, dsName)
+		result.DataStreams = make(map[string][]fieldInfo)
+		for name, ds := range pkg.DataStreams {
+			if len(filterDataStreams) > 0 && !slices.Contains(filterDataStreams, name) {
+				continue
+			}
+			result.DataStreams[name] = processFieldsFiles(ds.Fields)
 		}
-		sort.Strings(dsNames)
+	}
 
-		for _, dsName := range dsNames {
-			fmt.Println("Data Stream:", dsName)
-			fmt.Println()
-			_, _ = fmt.Fprintln(tw, "Name\tKind\tType\n----\t----\t----")
-			for _, f := range pkg.DataStreams[dsName].Fields {
-				var typeStr string
-				if f.Kind != field.KindECS {
-					typeStr = f.Type.String()
-				}
-				_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\n", f.Name, f.Kind.String(), typeStr)
+	if outputJSON {
+		enc := json.NewEncoder(os.Stdout)
+		if err = enc.Encode(result); err != nil {
+			return err
+		}
+	} else {
+		tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+
+		fmt.Println("Package:", result.Package)
+		fmt.Println("Version:", result.Version)
+		if result.ECSReference != "" {
+			fmt.Println("ECS Reference:", result.ECSReference)
+		}
+		fmt.Println()
+
+		if len(result.Input) > 0 {
+			_, _ = fmt.Fprintln(tw, "Name\tKind\tType")
+			_, _ = fmt.Fprintln(tw, "----\t----\t----")
+			for _, f := range result.Input {
+				_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\n", f.Name, f.Kind, f.Type)
 			}
 			_ = tw.Flush()
-			fmt.Println()
+		} else {
+			names := make([]string, 0, len(result.DataStreams))
+			for k := range result.DataStreams {
+				names = append(names, k)
+			}
+			sort.Strings(names)
+
+			for _, name := range names {
+				fmt.Println("Data stream:", name)
+				fmt.Println("")
+				_, _ = fmt.Fprintln(tw, "Name\tKind\tType")
+				_, _ = fmt.Fprintln(tw, "----\t----\t----")
+				for _, f := range result.DataStreams[name] {
+					_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\n", f.Name, f.Kind, f.Type)
+				}
+				_ = tw.Flush()
+				fmt.Println("")
+			}
 		}
 	}
 

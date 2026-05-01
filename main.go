@@ -43,6 +43,7 @@ var (
 	pkgDirs           []string
 	cacheDir          string
 	debug             bool
+	minified          bool
 	outputJSON        bool
 )
 
@@ -63,6 +64,7 @@ func parseArgs() {
 	flag.StringVar(&cacheDir, "cache-dir", ".pkgfields-cache", "directory to store cached files (use empty string to disable cache)")
 	flag.BoolVar(&debug, "debug", false, "enable debug logging")
 	flag.BoolVar(&outputJSON, "json", false, "output as JSON")
+	flag.BoolVar(&minified, "minify", false, "minify output JSON")
 	flag.Var(&filterDataStreams, "data-streams", "filter on a comma-separated list of data streams")
 
 	flag.Parse()
@@ -274,6 +276,9 @@ func doExtract() error {
 	var err error
 	if outputJSON {
 		enc := json.NewEncoder(os.Stdout)
+		if !minified {
+			enc.SetIndent("", "  ")
+		}
 		if err = enc.Encode(results); err != nil {
 			return err
 		}

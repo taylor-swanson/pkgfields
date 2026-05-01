@@ -60,7 +60,7 @@ func usage() {
 
 func parseArgs() {
 	flag.Usage = usage
-	flag.StringVar(&cacheDir, "cache-dir", ".pkgfields-cache", "directory to store cached files (omit to not use cache)")
+	flag.StringVar(&cacheDir, "cache-dir", ".pkgfields-cache", "directory to store cached files (use empty string to disable cache)")
 	flag.BoolVar(&debug, "debug", false, "enable debug logging")
 	flag.BoolVar(&outputJSON, "json", false, "output as JSON")
 	flag.Var(&filterDataStreams, "data-streams", "filter on a comma-separated list of data streams")

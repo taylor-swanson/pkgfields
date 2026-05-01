@@ -36,18 +36,18 @@ func (f *stringSliceFlag) Set(value string) error {
 
 var (
 	filterDataStreams stringSliceFlag
-	pkgDir            string
+	pkgDirs           []string
 	debug             bool
 	outputJSON        bool
 )
 
 func usage() {
-	_, _ = fmt.Fprintln(flag.CommandLine.Output(), "pkgfields [flags] PKG_DIR")
+	_, _ = fmt.Fprintln(flag.CommandLine.Output(), "pkgfields [flags] PKG_DIR [PKG_DIR...]")
 	_, _ = fmt.Fprintln(flag.CommandLine.Output())
 	_, _ = fmt.Fprintln(flag.CommandLine.Output(), "Elastic fleet package field extractor.")
 	_, _ = fmt.Fprintln(flag.CommandLine.Output())
 	_, _ = fmt.Fprintln(flag.CommandLine.Output(), "Args:")
-	_, _ = fmt.Fprintln(flag.CommandLine.Output(), "  PKG_DIR\n\tpath to package directory")
+	_, _ = fmt.Fprintln(flag.CommandLine.Output(), "  PKG_DIR\n\tpath to package directory, multiple directories may be provided")
 	_, _ = fmt.Fprintln(flag.CommandLine.Output())
 	_, _ = fmt.Fprintln(flag.CommandLine.Output(), "Flags:")
 	flag.PrintDefaults()
@@ -61,9 +61,7 @@ func parseArgs() {
 
 	flag.Parse()
 
-	if len(flag.Args()) >= 1 {
-		pkgDir = flag.Arg(0)
-	}
+	pkgDirs = flag.Args()
 }
 
 type fieldInfo struct {
@@ -125,70 +123,78 @@ func doExtract() error {
 		DataStreams  map[string][]fieldInfo `json:"data_streams,omitempty"`
 	}
 
-	pkg, err := pkgreader.Read(pkgDir)
-	if err != nil {
-		return err
-	}
-
-	result := pkgResult{
-		Package: pkg.Manifest().Name,
-		Version: pkg.Manifest().Version,
-	}
-	if pkg.Build != nil {
-		result.ECSReference = pkg.Build.Dependencies.ECS.Reference
-	}
-
-	if pkg.Manifest().Type == pkgspec.ManifestTypeInput {
-		result.Input = processFieldsFiles(pkg.Fields)
-	} else {
-		result.DataStreams = make(map[string][]fieldInfo)
-		for name, ds := range pkg.DataStreams {
-			if len(filterDataStreams) > 0 && !slices.Contains(filterDataStreams, name) {
-				continue
-			}
-			result.DataStreams[name] = processFieldsFiles(ds.Fields)
+	var results []pkgResult
+	for _, pkgDir := range pkgDirs {
+		pkg, err := pkgreader.Read(pkgDir)
+		if err != nil {
+			return err
 		}
+
+		result := pkgResult{
+			Package: pkg.Manifest().Name,
+			Version: pkg.Manifest().Version,
+		}
+		if pkg.Build != nil {
+			result.ECSReference = pkg.Build.Dependencies.ECS.Reference
+		}
+
+		if pkg.Manifest().Type == pkgspec.ManifestTypeInput {
+			result.Input = processFieldsFiles(pkg.Fields)
+		} else {
+			result.DataStreams = make(map[string][]fieldInfo)
+			for name, ds := range pkg.DataStreams {
+				if len(filterDataStreams) > 0 && !slices.Contains(filterDataStreams, name) {
+					continue
+				}
+				result.DataStreams[name] = processFieldsFiles(ds.Fields)
+			}
+		}
+
+		results = append(results, result)
 	}
 
+	var err error
 	if outputJSON {
 		enc := json.NewEncoder(os.Stdout)
-		if err = enc.Encode(result); err != nil {
+		if err = enc.Encode(results); err != nil {
 			return err
 		}
 	} else {
 		tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 
-		fmt.Println("Package:", result.Package)
-		fmt.Println("Version:", result.Version)
-		if result.ECSReference != "" {
-			fmt.Println("ECS Reference:", result.ECSReference)
-		}
-		fmt.Println()
-
-		if len(result.Input) > 0 {
-			_, _ = fmt.Fprintln(tw, "Name\tKind\tType")
-			_, _ = fmt.Fprintln(tw, "----\t----\t----")
-			for _, f := range result.Input {
-				_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\n", f.Name, f.Kind, f.Type)
+		for _, result := range results {
+			fmt.Println("Package:", result.Package)
+			fmt.Println("Version:", result.Version)
+			if result.ECSReference != "" {
+				fmt.Println("ECS Reference:", result.ECSReference)
 			}
-			_ = tw.Flush()
-		} else {
-			names := make([]string, 0, len(result.DataStreams))
-			for k := range result.DataStreams {
-				names = append(names, k)
-			}
-			sort.Strings(names)
+			fmt.Println()
 
-			for _, name := range names {
-				fmt.Println("Data stream:", name)
-				fmt.Println("")
+			if len(result.Input) > 0 {
 				_, _ = fmt.Fprintln(tw, "Name\tKind\tType")
 				_, _ = fmt.Fprintln(tw, "----\t----\t----")
-				for _, f := range result.DataStreams[name] {
+				for _, f := range result.Input {
 					_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\n", f.Name, f.Kind, f.Type)
 				}
 				_ = tw.Flush()
-				fmt.Println("")
+			} else {
+				names := make([]string, 0, len(result.DataStreams))
+				for k := range result.DataStreams {
+					names = append(names, k)
+				}
+				sort.Strings(names)
+
+				for _, name := range names {
+					fmt.Println("Data stream:", name)
+					fmt.Println("")
+					_, _ = fmt.Fprintln(tw, "Name\tKind\tType")
+					_, _ = fmt.Fprintln(tw, "----\t----\t----")
+					for _, f := range result.DataStreams[name] {
+						_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\n", f.Name, f.Kind, f.Type)
+					}
+					_ = tw.Flush()
+					fmt.Println("")
+				}
 			}
 		}
 	}
@@ -199,7 +205,7 @@ func doExtract() error {
 func main() {
 	parseArgs()
 
-	if pkgDir == "" {
+	if len(pkgDirs) == 0 {
 		flag.Usage()
 		os.Exit(2)
 	}

@@ -8,8 +8,11 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
 	"os"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -17,6 +20,7 @@ import (
 
 	"github.com/andrewkroh/go-package-spec/pkgreader"
 	"github.com/andrewkroh/go-package-spec/pkgspec"
+	"gopkg.in/yaml.v3"
 )
 
 type stringSliceFlag []string
@@ -37,6 +41,7 @@ func (f *stringSliceFlag) Set(value string) error {
 var (
 	filterDataStreams stringSliceFlag
 	pkgDirs           []string
+	cacheDir          string
 	debug             bool
 	outputJSON        bool
 )
@@ -55,6 +60,7 @@ func usage() {
 
 func parseArgs() {
 	flag.Usage = usage
+	flag.StringVar(&cacheDir, "cache-dir", ".pkgfields-cache", "directory to store cached files (omit to not use cache)")
 	flag.BoolVar(&debug, "debug", false, "enable debug logging")
 	flag.BoolVar(&outputJSON, "json", false, "output as JSON")
 	flag.Var(&filterDataStreams, "data-streams", "filter on a comma-separated list of data streams")
@@ -64,43 +70,151 @@ func parseArgs() {
 	pkgDirs = flag.Args()
 }
 
+func fetchRemoteFile(url string) ([]byte, error) {
+	res, err := http.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get remote file: %w", err)
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode != 200 {
+		return nil, fmt.Errorf("status code %d", res.StatusCode)
+	}
+
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	return body, nil
+}
+
 type fieldInfo struct {
 	Name string `json:"name"`
 	Kind string `json:"kind"`
 	Type string `json:"type,omitempty"`
 }
 
-func processFieldsFiles(files map[string]*pkgreader.FieldsFile) []fieldInfo {
-	var fields []fieldInfo
+type ecsFieldDef struct {
+	Type        string `yaml:"type"`
+	Description string `yaml:"description"`
+	Normalize   any    `yaml:"normalize"`
+}
 
-	var flatten func(f pkgspec.Field, parent string)
-	flatten = func(f pkgspec.Field, parent string) {
-		name := f.Name
-		if parent != "" {
-			name = parent + "." + name
+type ecsResolver struct {
+	fields map[string]*pkgspec.ECSFieldDefinition
+}
+
+func (r *ecsResolver) Lookup(name string) *pkgspec.ECSFieldDefinition {
+	return r.fields[name]
+}
+
+func newECSResolver(ref string) (*ecsResolver, error) {
+	isArray := func(v any) bool {
+		switch t := v.(type) {
+		case string:
+			if t == "array" {
+				return true
+			}
+		case []any:
+			for _, tv := range t {
+				switch vv := tv.(type) {
+				case string:
+					if vv == "array" {
+						return true
+					}
+				}
+			}
 		}
 
-		if f.Type != pkgspec.FieldTypeGroup {
-			fi := fieldInfo{
-				Name: name,
-			}
-			if f.External == pkgspec.FieldExternalECS {
-				fi.Kind = "ecs"
-			} else {
-				fi.Kind = "vendor"
-				fi.Type = string(f.Type)
-			}
-			fields = append(fields, fi)
-		}
+		return false
+	}
 
-		for _, v := range f.Fields {
-			flatten(v, name)
+	ref = strings.TrimPrefix(ref, "git@")
+
+	cacheFile := filepath.Join(cacheDir, "ecs-"+ref+".json")
+
+	if cacheDir != "" {
+		if _, err := os.Stat(cacheFile); err == nil {
+			var r ecsResolver
+			raw, err := os.ReadFile(cacheFile)
+			if err != nil {
+				return nil, err
+			}
+
+			if err := json.Unmarshal(raw, &r.fields); err != nil {
+				return nil, err
+			}
+
+			return &r, nil
 		}
 	}
 
+	raw, err := fetchRemoteFile("https://raw.githubusercontent.com/elastic/ecs/" + ref + "/generated/ecs/ecs_flat.yml")
+	if err != nil {
+		return nil, err
+	}
+	var ecsFieldDefs map[string]ecsFieldDef
+	if err = yaml.Unmarshal(raw, &ecsFieldDefs); err != nil {
+		return nil, err
+	}
+
+	r := ecsResolver{
+		fields: make(map[string]*pkgspec.ECSFieldDefinition, len(ecsFieldDefs)),
+	}
+	for k, v := range ecsFieldDefs {
+		r.fields[k] = &pkgspec.ECSFieldDefinition{
+			DataType:    v.Type,
+			Description: v.Description,
+			Array:       isArray(v.Normalize),
+		}
+	}
+
+	if cacheDir != "" {
+		if err = os.MkdirAll(cacheDir, 0o755); err != nil {
+			return nil, err
+		}
+		data, err := json.Marshal(r.fields)
+		if err != nil {
+			return nil, err
+		}
+		if err = os.WriteFile(cacheFile, data, 0o644); err != nil {
+			return nil, err
+		}
+	}
+
+	return &r, nil
+}
+
+func processFieldsFiles(files map[string]*pkgreader.FieldsFile, resolver *ecsResolver) []fieldInfo {
+	var fields []fieldInfo
+
 	for _, file := range files {
-		for _, f := range file.Fields {
-			flatten(f, "")
+		var ecsFunc func(name string) *pkgspec.ECSFieldDefinition
+		if resolver != nil {
+			ecsFunc = func(name string) *pkgspec.ECSFieldDefinition {
+				return resolver.Lookup(name)
+			}
+		}
+
+		flattened := pkgspec.FlattenFields(file.Fields, ecsFunc)
+
+		for _, f := range flattened {
+			info := fieldInfo{
+				Name: f.Name,
+			}
+
+			if f.External == pkgspec.FieldExternalECS {
+				info.Kind = "ecs"
+				if f.ECS != nil {
+					info.Type = f.ECS.DataType
+				}
+			} else {
+				info.Kind = "vendor"
+				info.Type = string(f.Type)
+			}
+
+			fields = append(fields, info)
 		}
 	}
 
@@ -134,19 +248,23 @@ func doExtract() error {
 			Package: pkg.Manifest().Name,
 			Version: pkg.Manifest().Version,
 		}
+		var resolver *ecsResolver
 		if pkg.Build != nil {
 			result.ECSReference = pkg.Build.Dependencies.ECS.Reference
+			if resolver, err = newECSResolver(result.ECSReference); err != nil {
+				slog.Error("Failed to create ECS resolver", slog.String("error", err.Error()))
+			}
 		}
 
 		if pkg.Manifest().Type == pkgspec.ManifestTypeInput {
-			result.Input = processFieldsFiles(pkg.Fields)
+			result.Input = processFieldsFiles(pkg.Fields, resolver)
 		} else {
 			result.DataStreams = make(map[string][]fieldInfo)
 			for name, ds := range pkg.DataStreams {
 				if len(filterDataStreams) > 0 && !slices.Contains(filterDataStreams, name) {
 					continue
 				}
-				result.DataStreams[name] = processFieldsFiles(ds.Fields)
+				result.DataStreams[name] = processFieldsFiles(ds.Fields, resolver)
 			}
 		}
 

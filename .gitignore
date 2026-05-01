@@ -1,6 +1,7 @@
 .idea/
 .claude/
 .cursor/
+.pkgfields-cache/
 
 .DS_Store
 

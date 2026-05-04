@@ -251,6 +251,15 @@ func doExtract() error {
 			Version: pkg.Manifest().Version,
 		}
 		var resolver *ecsResolver
+		// Workaround for pkgspec not reading build manifest on non-integration type packages.
+		if pkg.Build == nil {
+			var buildManifest pkgspec.BuildManifest
+			if data, err := os.ReadFile(filepath.Join(pkgDir, "_dev", "build", "build.yml")); err == nil {
+				if err = yaml.Unmarshal(data, &buildManifest); err == nil {
+					pkg.Build = &buildManifest
+				}
+			}
+		}
 		if pkg.Build != nil {
 			result.ECSReference = pkg.Build.Dependencies.ECS.Reference
 			if resolver, err = newECSResolver(result.ECSReference); err != nil {

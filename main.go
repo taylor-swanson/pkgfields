@@ -222,7 +222,11 @@ func processFieldsFiles(files map[string]*pkgreader.FieldsFile, resolver *ecsRes
 					info.Type = f.ECS.DataType
 				}
 			} else {
-				info.Kind = "vendor"
+				if strings.HasPrefix(f.Name, "ocsf.") {
+					info.Kind = "ocsf"
+				} else {
+					info.Kind = "vendor"
+				}
 				info.Type = string(f.Type)
 			}
 
@@ -258,6 +262,11 @@ func doExtract() error {
 		pkg, err := pkgreader.Read(pkgDir)
 		if err != nil {
 			return err
+		}
+
+		if strings.Contains(strings.ToLower(pkg.Manifest().Title), "deprecated") {
+			slog.Debug("Skipping deprecated package", slog.String("package", pkg.Manifest().Name))
+			continue
 		}
 
 		result := pkgResult{

@@ -170,6 +170,16 @@ func newECSResolver(ref string) (*ecsResolver, error) {
 			Description: v.Description,
 			Array:       isArray(v.Normalize),
 		}
+		if v.Type == "geo_point" {
+			r.fields[k+".lat"] = &pkgspec.ECSFieldDefinition{
+				DataType: v.Type,
+				Array:    isArray(v.Normalize),
+			}
+			r.fields[k+".long"] = &pkgspec.ECSFieldDefinition{
+				DataType: v.Type,
+				Array:    isArray(v.Normalize),
+			}
+		}
 	}
 
 	if cacheDir != "" {
@@ -188,7 +198,7 @@ func newECSResolver(ref string) (*ecsResolver, error) {
 	return &r, nil
 }
 
-func processFieldsFiles(files map[string]*pkgreader.FieldsFile, resolver *ecsResolver) []fieldInfo {
+func processFieldsFiles(files map[string]*pkgreader.FieldsFile, resolver *ecsResolver, ds, pkg string) []fieldInfo {
 	var fields []fieldInfo
 
 	for _, file := range files {
@@ -214,6 +224,10 @@ func processFieldsFiles(files map[string]*pkgreader.FieldsFile, resolver *ecsRes
 			} else {
 				info.Kind = "vendor"
 				info.Type = string(f.Type)
+			}
+
+			if info.Type == "" {
+				slog.Warn("Field has no type", slog.String("field", f.Name), slog.String("kind", info.Kind), slog.String("data_stream", ds), slog.String("package", pkg))
 			}
 
 			fields = append(fields, info)
@@ -268,14 +282,14 @@ func doExtract() error {
 		}
 
 		if pkg.Manifest().Type == pkgspec.ManifestTypeInput {
-			result.Input = processFieldsFiles(pkg.Fields, resolver)
+			result.Input = processFieldsFiles(pkg.Fields, resolver, "", pkg.Manifest().Name)
 		} else {
 			result.DataStreams = make(map[string][]fieldInfo)
 			for name, ds := range pkg.DataStreams {
 				if len(filterDataStreams) > 0 && !slices.Contains(filterDataStreams, name) {
 					continue
 				}
-				result.DataStreams[name] = processFieldsFiles(ds.Fields, resolver)
+				result.DataStreams[name] = processFieldsFiles(ds.Fields, resolver, name, pkg.Manifest().Name)
 			}
 		}
 

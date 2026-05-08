@@ -173,11 +173,16 @@ func newECSResolver(ref string) (*ecsResolver, error) {
 		if v.Type == "geo_point" {
 			r.fields[k+".lat"] = &pkgspec.ECSFieldDefinition{
 				DataType: v.Type,
-				Array:    isArray(v.Normalize),
 			}
 			r.fields[k+".long"] = &pkgspec.ECSFieldDefinition{
 				DataType: v.Type,
-				Array:    isArray(v.Normalize),
+			}
+			r.fields[k+".type"] = &pkgspec.ECSFieldDefinition{
+				DataType: v.Type,
+			}
+			r.fields[k+".coordinates"] = &pkgspec.ECSFieldDefinition{
+				DataType: v.Type,
+				Array:    true,
 			}
 		}
 	}

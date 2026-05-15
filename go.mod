@@ -1,4 +1,4 @@
-module pkgfields
+module github.com/taylor-swanson/pkgfields
 
 go 1.26
 

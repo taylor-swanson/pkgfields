@@ -21,6 +21,8 @@ import (
 	"github.com/andrewkroh/go-package-spec/pkgreader"
 	"github.com/andrewkroh/go-package-spec/pkgspec"
 	"gopkg.in/yaml.v3"
+
+	"github.com/taylor-swanson/pkgfields/internal/version"
 )
 
 type stringSliceFlag []string
@@ -45,6 +47,7 @@ var (
 	debug             bool
 	minified          bool
 	outputJSON        bool
+	showVersion       bool
 )
 
 func usage() {
@@ -65,6 +68,7 @@ func parseArgs() {
 	flag.BoolVar(&debug, "debug", false, "enable debug logging")
 	flag.BoolVar(&outputJSON, "json", false, "output as JSON")
 	flag.BoolVar(&minified, "minify", false, "minify output JSON")
+	flag.BoolVar(&showVersion, "version", false, "show version")
 	flag.Var(&filterDataStreams, "data-streams", "filter on a comma-separated list of data streams")
 
 	flag.Parse()
@@ -365,6 +369,10 @@ func doExtract() error {
 func main() {
 	parseArgs()
 
+	if showVersion {
+		fmt.Printf("%s version %s [commit %v]\n", version.Name, version.Version, version.Commit)
+		os.Exit(0)
+	}
 	if len(pkgDirs) == 0 {
 		flag.Usage()
 		os.Exit(2)

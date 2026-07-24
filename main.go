@@ -25,6 +25,48 @@ import (
 	"github.com/taylor-swanson/pkgfields/internal/version"
 )
 
+func joinFieldName(parent, name string) string {
+	if parent == "" {
+		return name
+	}
+
+	return parent + "." + name
+}
+
+func splitFieldName(name string) (string, bool) {
+	i := strings.LastIndex(name, ".")
+	if i == -1 {
+		return name, false
+	}
+
+	return name[:i], true
+}
+
+type Doc map[string]any
+
+func (d Doc) ExtractFields(result map[string]struct{}, parent string) {
+	for k, v := range d {
+		name := joinFieldName(parent, k)
+
+		switch t := v.(type) {
+		case map[string]any:
+			(Doc(t)).ExtractFields(result, name)
+		case []any:
+			for _, sliceValue := range t {
+				if elem, ok := sliceValue.(map[string]any); ok {
+					(Doc(elem)).ExtractFields(result, name)
+				}
+			}
+		default:
+			result[name] = struct{}{}
+		}
+	}
+}
+
+type pipelineExpected struct {
+	Expected []Doc
+}
+
 type stringSliceFlag []string
 
 func (f *stringSliceFlag) String() string {
@@ -48,6 +90,7 @@ var (
 	minified          bool
 	outputJSON        bool
 	showVersion       bool
+	pipelineTests     bool
 )
 
 func usage() {
@@ -69,6 +112,7 @@ func parseArgs() {
 	flag.BoolVar(&outputJSON, "json", false, "output as JSON")
 	flag.BoolVar(&minified, "minify", false, "minify output JSON")
 	flag.BoolVar(&showVersion, "version", false, "show version")
+	flag.BoolVar(&pipelineTests, "pipeline-tests", false, "use pipeline tests to detect field usage")
 	flag.Var(&filterDataStreams, "data-streams", "filter on a comma-separated list of data streams")
 
 	flag.Parse()
@@ -178,7 +222,7 @@ func newECSResolver(ref string) (*ecsResolver, error) {
 			r.fields[k+".lat"] = &pkgspec.ECSFieldDefinition{
 				DataType: v.Type,
 			}
-			r.fields[k+".long"] = &pkgspec.ECSFieldDefinition{
+			r.fields[k+".lon"] = &pkgspec.ECSFieldDefinition{
 				DataType: v.Type,
 			}
 			r.fields[k+".type"] = &pkgspec.ECSFieldDefinition{
@@ -207,8 +251,8 @@ func newECSResolver(ref string) (*ecsResolver, error) {
 	return &r, nil
 }
 
-func processFieldsFiles(files map[string]*pkgreader.FieldsFile, resolver *ecsResolver, ds, pkg string) []fieldInfo {
-	var fields []fieldInfo
+func processFieldsFiles(files map[string]*pkgreader.FieldsFile, resolver *ecsResolver, ds, pkg string) map[string]fieldInfo {
+	fields := map[string]fieldInfo{}
 
 	for _, file := range files {
 		var ecsFunc func(name string) *pkgspec.ECSFieldDefinition
@@ -222,7 +266,7 @@ func processFieldsFiles(files map[string]*pkgreader.FieldsFile, resolver *ecsRes
 
 		for _, f := range flattened {
 			info := fieldInfo{
-				Name: f.Name,
+				Name: strings.TrimSuffix(f.Name, ".*"),
 			}
 
 			if f.External == pkgspec.FieldExternalECS {
@@ -231,7 +275,7 @@ func processFieldsFiles(files map[string]*pkgreader.FieldsFile, resolver *ecsRes
 					info.Type = f.ECS.DataType
 				}
 			} else {
-				if strings.HasPrefix(f.Name, "ocsf.") {
+				if strings.HasPrefix(info.Name, "ocsf.") {
 					info.Kind = "ocsf"
 				} else {
 					info.Kind = "vendor"
@@ -240,30 +284,92 @@ func processFieldsFiles(files map[string]*pkgreader.FieldsFile, resolver *ecsRes
 			}
 
 			if info.Type == "" {
-				slog.Warn("Field has no type", slog.String("field", f.Name), slog.String("kind", info.Kind), slog.String("data_stream", ds), slog.String("package", pkg))
+				slog.Warn("Field has no type", slog.String("field", info.Name), slog.String("kind", info.Kind), slog.String("data_stream", ds), slog.String("package", pkg))
 			}
 
-			fields = append(fields, info)
+			fields[info.Name] = info
 		}
 	}
-
-	sort.SliceStable(fields, func(i, j int) bool {
-		return fields[i].Name < fields[j].Name
-	})
-	sort.SliceStable(fields, func(i, j int) bool {
-		return fields[i].Kind < fields[j].Kind
-	})
 
 	return fields
 }
 
+func processDataStreamTests(testDir string, fields map[string]fieldInfo, resolver *ecsResolver) error {
+	if _, err := os.Stat(testDir); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+
+	files, err := filepath.Glob(filepath.Join(testDir, "*-expected.json"))
+	if err != nil {
+		return err
+	}
+
+	extracted := map[string]struct{}{}
+
+	for _, f := range files {
+		raw, err := os.ReadFile(f)
+		if err != nil {
+			return err
+		}
+		var expected pipelineExpected
+		if err = json.Unmarshal(raw, &expected); err != nil {
+			return err
+		}
+
+		for _, v := range expected.Expected {
+			v.ExtractFields(extracted, "")
+		}
+	}
+
+	for k := range extracted {
+		if _, ok := fields[k]; ok {
+			continue
+		}
+
+		ecsDef := resolver.Lookup(k)
+		if ecsDef != nil {
+			fields[k] = fieldInfo{
+				Name: k,
+				Kind: "ecs",
+				Type: ecsDef.DataType,
+			}
+			continue
+		}
+
+		if k == "o365.audit.Actor" {
+			slog.Error("")
+		}
+
+		found := false
+		split, didSplit := splitFieldName(k)
+		for didSplit {
+			if f, ok := fields[split]; ok {
+				if f.Type == "nested" || f.Type == "object" || f.Type == "flattened" {
+					found = true
+				}
+				break
+			}
+
+			split, didSplit = splitFieldName(split)
+		}
+
+		if !found {
+			slog.Warn("Failed to resolve field", slog.String("name", k))
+		}
+	}
+
+	return nil
+}
+
 func doExtract() error {
 	type pkgResult struct {
-		Package      string                 `json:"package"`
-		Version      string                 `json:"version"`
-		ECSReference string                 `json:"ecs_reference"`
-		Input        []fieldInfo            `json:"input,omitempty"`
-		DataStreams  map[string][]fieldInfo `json:"data_streams,omitempty"`
+		Package      string                          `json:"package"`
+		Version      string                          `json:"version"`
+		ECSReference string                          `json:"ecs_reference"`
+		Input        map[string]fieldInfo            `json:"input,omitempty"`
+		DataStreams  map[string]map[string]fieldInfo `json:"data_streams,omitempty"`
 	}
 
 	var results []pkgResult
@@ -302,12 +408,18 @@ func doExtract() error {
 		if pkg.Manifest().Type == pkgspec.ManifestTypeInput {
 			result.Input = processFieldsFiles(pkg.Fields, resolver, "", pkg.Manifest().Name)
 		} else {
-			result.DataStreams = make(map[string][]fieldInfo)
+			result.DataStreams = make(map[string]map[string]fieldInfo)
 			for name, ds := range pkg.DataStreams {
 				if len(filterDataStreams) > 0 && !slices.Contains(filterDataStreams, name) {
 					continue
 				}
-				result.DataStreams[name] = processFieldsFiles(ds.Fields, resolver, name, pkg.Manifest().Name)
+				referenceFields := processFieldsFiles(ds.Fields, resolver, name, pkg.Manifest().Name)
+
+				if err = processDataStreamTests(filepath.Join(pkgDir, ds.Path(), "_dev", "test", "pipeline"), referenceFields, resolver); err != nil {
+					return err
+				}
+
+				result.DataStreams[name] = referenceFields
 			}
 		}
 
@@ -337,9 +449,7 @@ func doExtract() error {
 			if len(result.Input) > 0 {
 				_, _ = fmt.Fprintln(tw, "Name\tKind\tType")
 				_, _ = fmt.Fprintln(tw, "----\t----\t----")
-				for _, f := range result.Input {
-					_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\n", f.Name, f.Kind, f.Type)
-				}
+				printFields(tw, result.Input)
 				_ = tw.Flush()
 			} else {
 				names := make([]string, 0, len(result.DataStreams))
@@ -353,9 +463,7 @@ func doExtract() error {
 					fmt.Println("")
 					_, _ = fmt.Fprintln(tw, "Name\tKind\tType")
 					_, _ = fmt.Fprintln(tw, "----\t----\t----")
-					for _, f := range result.DataStreams[name] {
-						_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\n", f.Name, f.Kind, f.Type)
-					}
+					printFields(tw, result.DataStreams[name])
 					_ = tw.Flush()
 					fmt.Println("")
 				}
@@ -364,6 +472,24 @@ func doExtract() error {
 	}
 
 	return nil
+}
+
+func printFields(w io.Writer, fieldMap map[string]fieldInfo) {
+	fields := make([]fieldInfo, 0, len(fieldMap))
+	for _, v := range fieldMap {
+		fields = append(fields, v)
+	}
+
+	sort.SliceStable(fields, func(i, j int) bool {
+		return fields[i].Name < fields[j].Name
+	})
+	sort.SliceStable(fields, func(i, j int) bool {
+		return fields[i].Kind < fields[j].Kind
+	})
+
+	for _, v := range fields {
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\n", v.Name, v.Kind, v.Type)
+	}
 }
 
 func main() {

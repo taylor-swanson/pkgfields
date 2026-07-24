@@ -90,7 +90,6 @@ var (
 	minified          bool
 	outputJSON        bool
 	showVersion       bool
-	pipelineTests     bool
 )
 
 func usage() {
@@ -112,7 +111,6 @@ func parseArgs() {
 	flag.BoolVar(&outputJSON, "json", false, "output as JSON")
 	flag.BoolVar(&minified, "minify", false, "minify output JSON")
 	flag.BoolVar(&showVersion, "version", false, "show version")
-	flag.BoolVar(&pipelineTests, "pipeline-tests", false, "use pipeline tests to detect field usage")
 	flag.Var(&filterDataStreams, "data-streams", "filter on a comma-separated list of data streams")
 
 	flag.Parse()

@@ -281,6 +281,29 @@ func processFieldsFiles(files map[string]*pkgreader.FieldsFile, resolver *ecsRes
 					info.Kind = "vendor"
 				}
 				info.Type = string(f.Type)
+
+				if info.Type == "geo_point" {
+					fields[info.Name+".lat"] = fieldInfo{
+						Name: info.Name + ".lat",
+						Kind: info.Kind,
+						Type: info.Type,
+					}
+					fields[info.Name+".lon"] = fieldInfo{
+						Name: info.Name + ".lon",
+						Kind: info.Kind,
+						Type: info.Type,
+					}
+					fields[info.Name+".type"] = fieldInfo{
+						Name: info.Name + ".type",
+						Kind: info.Kind,
+						Type: info.Type,
+					}
+					fields[info.Name+".coordinates"] = fieldInfo{
+						Name: info.Name + ".coordinates",
+						Kind: info.Kind,
+						Type: info.Type,
+					}
+				}
 			}
 
 			if info.Type == "" {

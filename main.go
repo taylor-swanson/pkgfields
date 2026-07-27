@@ -88,6 +88,7 @@ var (
 	cacheDir          string
 	debug             bool
 	minified          bool
+	outputCSV         bool
 	outputJSON        bool
 	showVersion       bool
 )
@@ -108,6 +109,7 @@ func parseArgs() {
 	flag.Usage = usage
 	flag.StringVar(&cacheDir, "cache-dir", ".pkgfields-cache", "directory to store cached files (use empty string to disable cache)")
 	flag.BoolVar(&debug, "debug", false, "enable debug logging")
+	flag.BoolVar(&outputCSV, "csv", false, "output as CSV")
 	flag.BoolVar(&outputJSON, "json", false, "output as JSON")
 	flag.BoolVar(&minified, "minify", false, "minify output JSON")
 	flag.BoolVar(&showVersion, "version", false, "show version")
@@ -433,6 +435,23 @@ func doExtract() error {
 		if err = enc.Encode(results); err != nil {
 			return err
 		}
+	} else if outputCSV {
+		fmt.Println("package,version,field,kind,type")
+		for _, result := range results {
+			if len(result.Input) > 0 {
+				printFieldsCSV(os.Stdout, result.Package, result.Version, result.Input)
+			} else {
+				names := make([]string, 0, len(result.DataStreams))
+				for k := range result.DataStreams {
+					names = append(names, k)
+				}
+				sort.Strings(names)
+
+				for _, name := range names {
+					printFieldsCSV(os.Stdout, result.Package+"."+name, result.Version, result.DataStreams[name])
+				}
+			}
+		}
 	} else {
 		tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 
@@ -447,7 +466,7 @@ func doExtract() error {
 			if len(result.Input) > 0 {
 				_, _ = fmt.Fprintln(tw, "Name\tKind\tType")
 				_, _ = fmt.Fprintln(tw, "----\t----\t----")
-				printFields(tw, result.Input)
+				printFieldsText(tw, result.Input)
 				_ = tw.Flush()
 			} else {
 				names := make([]string, 0, len(result.DataStreams))
@@ -461,7 +480,7 @@ func doExtract() error {
 					fmt.Println("")
 					_, _ = fmt.Fprintln(tw, "Name\tKind\tType")
 					_, _ = fmt.Fprintln(tw, "----\t----\t----")
-					printFields(tw, result.DataStreams[name])
+					printFieldsText(tw, result.DataStreams[name])
 					_ = tw.Flush()
 					fmt.Println("")
 				}
@@ -472,7 +491,7 @@ func doExtract() error {
 	return nil
 }
 
-func printFields(w io.Writer, fieldMap map[string]fieldInfo) {
+func printFieldsText(w io.Writer, fieldMap map[string]fieldInfo) {
 	fields := make([]fieldInfo, 0, len(fieldMap))
 	for _, v := range fieldMap {
 		fields = append(fields, v)
@@ -487,6 +506,24 @@ func printFields(w io.Writer, fieldMap map[string]fieldInfo) {
 
 	for _, v := range fields {
 		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\n", v.Name, v.Kind, v.Type)
+	}
+}
+
+func printFieldsCSV(w io.Writer, pkg, version string, fieldMap map[string]fieldInfo) {
+	fields := make([]fieldInfo, 0, len(fieldMap))
+	for _, v := range fieldMap {
+		fields = append(fields, v)
+	}
+
+	sort.SliceStable(fields, func(i, j int) bool {
+		return fields[i].Name < fields[j].Name
+	})
+	sort.SliceStable(fields, func(i, j int) bool {
+		return fields[i].Kind < fields[j].Kind
+	})
+
+	for _, v := range fields {
+		_, _ = fmt.Fprintf(w, "%s,%s,%s,%s,%s\n", pkg, version, v.Name, v.Kind, v.Type)
 	}
 }
 
